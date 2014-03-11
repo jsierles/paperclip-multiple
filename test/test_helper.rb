@@ -43,11 +43,11 @@ FOG_DIRECTORY = 'bucket-name'
 class User < ActiveRecord::Base
   include Paperclip::Glue
 
-  cattr_accessor :s3_enabled, :display_from_s3
+  cattr_accessor :alt_storage_enabled, :display_from_alternate
 
   has_attached_file :avatar, {
     storage: :multiple,
-
+    alternate_storage: :fog,
     fog_credentials: FOG_CREDENTIALS,
     fog_public:    true,
     fog_directory: FOG_DIRECTORY,
@@ -57,8 +57,8 @@ class User < ActiveRecord::Base
     path: ":compatible_path/:class/:attachment/:id_partition/:style/:filename",
     url:  "/uploads/:class/:attachment/:id_partition/:style/:filename",
 
-    multiple_if:     lambda { |user| User.s3_enabled      },
-    display_from_s3: lambda { |user| User.display_from_s3 }
+    multiple_if:     lambda { |user| User.alt_storage_enabled      },
+    display_from_alternate: lambda { |user| User.display_from_alternate }
   }
 
   validates_attachment_content_type :avatar, :content_type => /\Aimage/

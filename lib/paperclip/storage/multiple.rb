@@ -1,20 +1,20 @@
 module Paperclip
   module Storage
     ##
-    # This is a Paperclip storage to work simultaneously with a filesystem and fog backends.
+    # This is a Paperclip storage to work simultaneously with a filesystem and another backend (S3, riak, etc.)
     #
-    # It's optimized to migrate from filesystem to s3 (with fog), so it's required that assets
+    # It's optimized to migrate from filesystem to another storage, so it's required that assets
     # always have their filesystem version to begin with.
     module Multiple
       def self.extended attachment
         if attachment.options[:multiple_if].call(attachment.instance)
           attachment.instance_eval do
-            @filesystem = Attachment.new(attachment.name, attachment.instance, attachment.options.merge(storage: :filesystem))
-            @fog        = Attachment.new(attachment.name, attachment.instance, attachment.options.merge(storage: :fog))
+            @filesystem  = Attachment.new(attachment.name, attachment.instance, attachment.options.merge(storage: :filesystem))
+            @alt_storage = Attachment.new(attachment.name, attachment.instance, attachment.options.merge(storage: attachment.options[:alternate_storage]))
 
             # `after_flush_writes` closes files and unlinks them, but we have to read them twice to save them
             # on both storages, so we blank this one, and let the other attachment close the files.
-            def @fog.after_flush_writes; end
+            def @alt_storage.after_flush_writes; end
           end
         else
           attachment.extend Filesystem
@@ -25,26 +25,26 @@ module Paperclip
         @filesystem
       end
 
-      def fog
-        @fog
+      def alt_storage
+        @alt_storage
       end
 
-      def display_from_s3?
-        @options[:display_from_s3].call(instance) && use_multiple?
+      def display_from_alternate?
+        @options[:display_from_alternate].call(instance) && use_multiple?
       end
 
       ##
-      # This defaults to the filesystem version, since it's a lot faster than querying s3.
+      # This defaults to the filesystem version, since it's likely faster than querying other stores
       def exists?(style_name = default_style)
         filesystem.exists?
       end
 
       ##
-      # Delegates to both filesystem and fog storages.
+      # Delegates to both filesystem and alternate stores.
       def flush_writes
         sync(:@queued_for_write)
 
-        @fog.flush_writes
+        @alt_storage.flush_writes
         @filesystem.flush_writes
 
         @queued_for_write = {}
@@ -52,20 +52,20 @@ module Paperclip
 
       def queue_all_for_delete
         if use_multiple? && file?
-          @filesystem.send :queue_some_for_delete, *all_styles
-          @fog.send :queue_some_for_delete, *all_styles
+          @filesystem.send  :queue_some_for_delete, *all_styles
+          @alt_storage.send :queue_some_for_delete, *all_styles
         end
         super
       end
 
       ##
-      # Delegates to both filesystem and fog storages.
+      # Delegates to both filesystem and alternate stores.
       def flush_deletes
         @filesystem.flush_deletes
         begin
-          @fog.flush_deletes
+          @alt_storage.flush_deletes
         rescue Excon::Errors::Error => e
-          log("There was an unexpected error while deleting file from fog: #{e}")
+          log("There was an unexpected error while deleting file from alternate storage: #{e}")
         end
         @queued_for_delete = []
       end
@@ -77,8 +77,8 @@ module Paperclip
       end
 
       def url(style_name = default_style, options = {})
-        if display_from_s3?
-          @fog.url(style_name, options)
+        if display_from_alternate?
+          @alt_storage.url(style_name, options)
         elsif use_multiple?
           @filesystem.url(style_name, options)
         else
@@ -87,8 +87,8 @@ module Paperclip
       end
 
       def path(style_name = default_style)
-        if display_from_s3?
-          @fog.path(style_name)
+        if display_from_alternate?
+          @alt_storage.path(style_name)
         elsif use_multiple?
           @filesystem.path(style_name)
         else
@@ -97,13 +97,13 @@ module Paperclip
       end
 
       ##
-      # These two are needed for general fog working-around
+      # These two are needed for a fog workaround - won't work with other stores
       def public_url(style = default_style)
-        @fog.public_url(style)
+        @alt_storage.public_url(style)
       end
 
       def expiring_url(time = (Time.now + 3600), style = default_style)
-        @fog.expiring_url(time, style)
+        @alt_storage.expiring_url(time, style)
       end
 
       private
@@ -113,7 +113,7 @@ module Paperclip
       end
 
       def sync(ivar)
-        @fog.instance_variable_set(ivar, instance_variable_get(ivar))
+        @alt_storage.instance_variable_set(ivar, instance_variable_get(ivar))
         @filesystem.instance_variable_set(ivar, instance_variable_get(ivar))
       end
 
